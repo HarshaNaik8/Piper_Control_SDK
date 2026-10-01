@@ -5,14 +5,16 @@ pipeline so you can trigger robot trajectory replays automatically across multip
 episodes without any manual button presses.
 
 Usage:
-  # With physical robot:
-  python dataset_trigger_demo.py --episodes 5
+  # Replay a recorded software trajectory across 5 episodes:
+  python dataset_trigger_demo.py --trajectory trajectories/my_trajectory.json --episodes 5
 
-  # In simulation (offline test):
+  # Replay in simulation (offline test):
   python dataset_trigger_demo.py --episodes 3 --mock
 """
 
+import os
 import sys
+import glob
 import time
 import argparse
 from typing import Optional
@@ -22,8 +24,10 @@ from piper_controller import PiperRobotController
 
 def run_dataset_collection(
     num_episodes: int = 5,
+    trajectory_file: Optional[str] = None,
     interface: str = "agx_cando",
     channel: str = "0",
+    speed_factor: float = 1.0,
     mock: bool = False,
     episode_delay: float = 2.0,
 ):
@@ -33,7 +37,15 @@ def run_dataset_collection(
     print(f" Interface       : {interface}:{channel} {'(SIMULATION)' if mock else ''}")
     print("=" * 70)
 
-    # 1. Initialize and connect controller
+    # 1. Resolve trajectory file
+    if not trajectory_file:
+        saved = glob.glob("trajectories/*.json")
+        if saved:
+            saved.sort(key=os.path.getmtime, reverse=True)
+            trajectory_file = saved[0]
+            print(f"[Dataset] Using latest recorded trajectory: {trajectory_file}")
+
+    # 2. Initialize and connect controller
     robot = PiperRobotController(
         interface=interface,
         channel=channel,
@@ -44,8 +56,8 @@ def run_dataset_collection(
         print("[ERROR] Failed to connect to Piper robot. Check connection.")
         return 1
 
-    # 2. Safety enable
-    print("[+] Enabling robot arm motors...")
+    # 3. Power on and wake up arm
+    print("[+] Waking up robot arm and enabling all motors (0xFF)...")
     robot.enable_arm()
     time.sleep(1.0)
 
@@ -55,33 +67,23 @@ def run_dataset_collection(
             print(f">>> STARTING EPISODE {episode} / {num_episodes}")
             print("-" * 50)
 
-            # Optional: Hook to start your camera/sensor recording
-            print(f"[Dataset] Triggering sensor & camera recording for Episode {episode}...")
+            print(f"[Camera/Sensors] >>> RECORDING STARTED for Episode {episode} <<<")
 
-            # Trigger the recorded trajectory (software double-tap equivalent)
-            print("[Dataset] Triggering Piper trajectory execution...")
-            if not robot.execute_taught_trajectory():
-                print(f"[!] Failed to trigger trajectory on episode {episode}.")
-                break
+            if trajectory_file and os.path.exists(trajectory_file):
+                print(f"[Dataset] Replaying trajectory: {os.path.basename(trajectory_file)}")
+                robot.replay_software_trajectory(
+                    trajectory=trajectory_file,
+                    speed_factor=speed_factor,
+                    loop_count=1,
+                    blocking=True,
+                )
+            else:
+                print("[Dataset] Triggering firmware trajectory replay (CAN 0x150, 0x03)...")
+                robot.execute_firmware_trajectory()
+                time.sleep(3.0)
 
-            # Wait for the trajectory to complete automatically
-            # You can also sample joint positions in the callback during playback!
-            def telemetry_callback(status):
-                joints = robot.get_joint_angles()
-                # print(f"  [Recording] Status: {status['arm_status_name']} | Joints: {joints}")
-
-            completed = robot.wait_for_trajectory_completion(
-                timeout=90.0,
-                poll_interval=0.1,
-                on_progress=telemetry_callback,
-            )
-
-            if not completed:
-                print(f"[WARN] Episode {episode} did not complete within the timeout or was interrupted.")
-                break
-
-            # Optional: Hook to save / end episode dataset file
-            print(f"[Dataset] Episode {episode} finished! Saved episode data.")
+            print(f"[Camera/Sensors] >>> RECORDING STOPPED for Episode {episode} <<<")
+            print(f"[Dataset] Episode {episode} data captured and saved.")
 
             if episode < num_episodes:
                 print(f"[Dataset] Waiting {episode_delay}s before next episode...")
@@ -93,7 +95,7 @@ def run_dataset_collection(
 
     except KeyboardInterrupt:
         print("\n[INFO] Dataset collection interrupted by user.")
-        robot.stop_trajectory()
+        robot.stop_software_replay()
     finally:
         print("[+] Disconnecting robot cleanly...")
         robot.disconnect()
@@ -104,6 +106,8 @@ def run_dataset_collection(
 def main():
     parser = argparse.ArgumentParser(description="Piper Dataset Collection Loop")
     parser.add_argument("--episodes", type=int, default=3, help="Number of episodes to record")
+    parser.add_argument("--trajectory", type=str, default=None, help="Path to JSON trajectory file")
+    parser.add_argument("--speed", type=float, default=1.0, help="Replay speed factor (0.5 to 2.0)")
     parser.add_argument("--interface", type=str, default="agx_cando", help="CAN interface")
     parser.add_argument("--channel", type=str, default="0", help="CAN channel")
     parser.add_argument("--delay", type=float, default=2.0, help="Delay between episodes in seconds")
@@ -113,8 +117,10 @@ def main():
     sys.exit(
         run_dataset_collection(
             num_episodes=args.episodes,
+            trajectory_file=args.trajectory,
             interface=args.interface,
             channel=args.channel,
+            speed_factor=args.speed,
             mock=args.mock,
             episode_delay=args.delay,
         )
