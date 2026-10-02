@@ -1,36 +1,41 @@
-# AgileX Piper Robotic Arm Laptop Controller
+# AgileX Piper Robotic Arm - Camera Sync Controller
 
 A software suite to control the **AgileX Piper 6-DOF Robotic Arm** from a Windows laptop over a USB-to-CAN adapter using the official AgileX Python SDK.
+
+## ⚠️ Important Notice: Project Status
+
+**This project is currently under active development and is not 100% verified across all features.**
+* **What is READY & TESTED:** The core implementation—the **Trajectory Replay button** in the GUI and via the CLI. It successfully and safely triggers the robot without dropping torque.
+* **What is UNVERIFIED:** Additional safety features (Emergency Stop / Dead Weight, Hold Position) and Gripper Enable/Disable controls have been implemented in the code based on CAN protocols but **have not yet been fully physically tested or verified** to guarantee they won't interfere with the firmware state. Use these secondary buttons with caution.
 
 ---
 
 ## 🎯 Goal
 
-Replace the physical drag-teach button operation (double-tapping the button between J5 and J6 to replay a recorded motion) with an automated software trigger over CAN bus (`grag_teach_ctrl = 0x03` on CAN ID `0x150`).
+Replace the manual, repetitive physical drag-teach button operation (double-tapping to replay a recorded motion) with an automated software trigger over CAN bus (`grag_teach_ctrl = 0x03` on CAN ID `0x150`).
 
-This enables **100% hands-free dataset collection**: your laptop triggers the motion, waits for completion, saves sensor/camera data, and loops across episodes without any human needing to touch the robot arm.
+This enables **Zero-Latency Multi-Camera Dataset Collection**: your laptop triggers the motion, perfectly synchronizes with 3x Samsung mobile camera recordings (via a mentor script), waits for completion, and loops across episodes without any human needing to touch the robot arm during the actual dataset capture.
 
-```
-+-------------------------------------------------------------+
-| Physical Workflow (Old):                                    |
-|   Hand move arm -> Single-tap -> Double-tap button manually |
-+-------------------------------------------------------------+
-                               |
-                               v
-+-------------------------------------------------------------+
-| Laptop Control Workflow (New):                              |
-|   Laptop -> Python SDK -> python-can -> USB-CAN -> Piper     |
-|   Command: MotionCtrl_1(grag_teach_ctrl=0x03)                |
-+-------------------------------------------------------------+
-```
+---
+
+## 🔄 The Replay Button Workflow (Crucial)
+
+**How it works:** The GUI Replay button does *not* work completely blindly out of the box. **You must "prime" the action physically once.**
+
+1. Single-click the physical green button on the arm to enter drag-teach mode.
+2. Move the arm through your desired task.
+3. Single-click the physical button again to finish recording.
+4. **The "Prime" Step:** Double-click the physical button to make the robot mimic the action once. 
+
+**Why is this required?**
+We intentionally left the workflow this way! It acts as a mandatory verification step. Before you hand over control to the automated GUI and start recording 100+ episodes of dataset videos, you *must* physically watch the robot perform the task once to ensure it is correct and safe. Once verified, you can step away and use the GUI Replay button (or the `piper_sync_trigger.py` script) to repeat the exact same task indefinitely. This is a safety feature, not a bug.
 
 ---
 
 ## 🏗️ Architecture
 
-```
+```text
 Windows 11 Laptop
-  │
   ├── Python 3.13 Virtual Environment (venv)
   │     ├── piper_sdk (0.6.2)
   │     ├── python-can (4.6.1)
@@ -38,16 +43,12 @@ Windows 11 Laptop
   │
   └── USB Port
         │
-        ▼
    USB-CAN Adapter (AgileX CANdo)
-        │
-        ▼ CAN-H / CAN-L (1 Mbps)
+        │ CAN-H / CAN-L (1 Mbps)
    Piper Aviation Interface (Pins 6 & 7)
         │
-        ▼
    Piper Integrated Controller (Firmware)
         │
-        ▼
    6-DOF Motors & Gripper
 ```
 
@@ -68,91 +69,44 @@ In PowerShell:
    - Aviation Pin 7: CAN-L (Blue / Low)
 3. **USB**: Connect the USB-CAN adapter to your laptop's USB port.
 
----
-
-## 🪜 Testing Ladder (Step-by-Step Execution)
-
-Follow the roadmap established in `Piper_control_planning.pdf` from safest to fully active:
-
-### Level 1 & 2: Hardware & CAN Detection
-Scan USB devices and confirm CAN initialization (transmits zero motion commands):
+### 3. Launch the Simple GUI
+Launch the fully stripped-down, safe desktop dashboard:
 ```powershell
-python hardware_check.py
-```
-
-### Level 3: Passive CAN Sniffer / Monitor (Listen Only)
-Passively listen to the robot's broadcast frames without moving anything. Use this to observe what the robot sends when you press the button:
-```powershell
-python can_monitor.py
-```
-*Tip: To save frames to CSV, run: `python can_monitor.py --log button_traffic.csv`*
-
-### Level 4 & 5: Live State & Telemetry Monitor
-Read live joint angles (J1-J6), gripper stroke, and operational status:
-```powershell
-python piper_state.py
-```
-
-### Level 6: Trajectory Playback (Double-Tap Software Replacement)
-Trigger the recorded trajectory directly from the command line:
-```powershell
-python piper_cli.py play
-```
-*Additional CLI commands:*
-- Pause: `python piper_cli.py pause`
-- Resume: `python piper_cli.py resume`
-- Stop: `python piper_cli.py stop`
-- Interactive Console: `python piper_cli.py interactive`
-
-### Level 7: Interactive Graphical User Interface (GUI)
-Launch the full desktop dashboard:
-```powershell
-python piper_gui.py
+python piper_simple_gui.py
 ```
 *Features:*
-- Connect/Disconnect toggle
-- Live 6-DOF joint angles & gripper stroke
-- Real-time status display (Mode, Arm Status, CAN FPS)
-- Play, Pause, Resume, Stop, Move to Start buttons
-- Drag-Teach record triggers
-- Motor Enable/Disable and Emergency Stop
-- Real-time event log
-- **Offline Simulation Mode** checkbox to test UI without hardware attached
+- Big, unambiguous 'REPLAY TRAJECTORY' button.
+- Clean Gripper controls: Enable (Stiff), Disable (Loose). *(Pending verification)*
+- Safety Controls: Hold Position vs Dead Weight. *(Pending verification)*
+- Zero dangerous pause/resume toggles that conflict with the arm's firmware.
 
 ---
 
-## 🤖 Dataset Collection Integration
+## 📊 Dataset Collection Integration
 
-Use `dataset_trigger_demo.py` in your automated data collection pipelines:
+Use `piper_sync_trigger.py` to seamlessly integrate with external camera recording scripts:
 
 ```python
-from piper_controller import PiperRobotController
+from piper_sync_trigger import PiperSyncTrigger
 
-robot = PiperRobotController(interface="agx_cando", channel="0")
-robot.connect()
-robot.enable_arm()
+robot = PiperSyncTrigger(interface="agx_cando", channel="0")
+if not robot.connect():
+    raise RuntimeError("Failed to connect.")
 
 for episode in range(10):
     print(f"Recording episode {episode}...")
     
-    # 1. Trigger the taught trajectory (no button press needed)
-    robot.execute_taught_trajectory()
+    # 1. Start your Samsung camera recordings here
+    # ...
     
-    # 2. Wait until motion finishes while your cameras record
-    robot.wait_for_trajectory_completion(timeout=60.0)
+    # 2. Trigger the taught trajectory simultaneously (Zero ms latency)
+    # This blocks until the robot finishes moving.
+    robot.replay_and_wait(timeout=60.0)
     
-    # 3. Save episode data and proceed to next
+    # 3. Stop your cameras and save episode data
+    # ...
 
 robot.disconnect()
-```
-
-Run demo:
-```powershell
-# With real robot:
-python dataset_trigger_demo.py --episodes 5
-
-# Offline simulation test:
-python dataset_trigger_demo.py --episodes 3 --mock
 ```
 
 ---
@@ -162,11 +116,10 @@ python dataset_trigger_demo.py --episodes 3 --mock
 | File | Description |
 |---|---|
 | `config.py` | CAN interface settings, protocol IDs, and status code decoders |
+| `piper_playback.py` | Core safe CAN playback controller (No torque drops) |
+| `piper_simple_gui.py` | Clean Tkinter GUI focused on Replay, Hold, and Dead Weight |
+| `piper_sync_trigger.py` | CLI and API wrapper for zero-latency video script integration |
+| `dataset_trigger_demo.py` | Automated multi-episode trajectory playback demo |
 | `hardware_check.py` | Level 1 & 2: USB device and CAN bus detection |
 | `can_monitor.py` | Level 3: Passive CAN frame sniffer & CSV logger |
-| `piper_controller.py` | Core API class (`PiperRobotController`) handling SDK calls |
-| `piper_state.py` | Level 4 & 5: Live joint angle & status terminal reader |
-| `piper_cli.py` | Command-line tool with interactive text control menu |
-| `piper_gui.py` | Level 7: Full Tkinter desktop dashboard |
-| `dataset_trigger_demo.py` | Automated multi-episode trajectory playback runner |
-| `requirements.txt` | Python package requirements |
+| `requirements.txt` | Python package dependencies |
